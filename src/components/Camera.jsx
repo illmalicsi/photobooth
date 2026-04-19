@@ -23,6 +23,7 @@ function Camera({ onComplete }) {
   const canvasRef = useRef(null)
   const audioRef = useRef(null)
   const streamRef = useRef(null)
+  const imageCaptureRef = useRef(null)
   const timersRef = useRef([])
 
   const [permissionState, setPermissionState] = useState('pending')
@@ -40,22 +41,56 @@ function Camera({ onComplete }) {
 
   useEffect(() => {
     let isMounted = true
+
+    const initImageCapture = (track) => {
+      try {
+        if (typeof window !== 'undefined' && 'ImageCapture' in window && track) {
+          imageCaptureRef.current = new window.ImageCapture(track)
+          return
+        }
+      } catch {
+        // Some browsers expose ImageCapture but fail during construction.
+      }
+      imageCaptureRef.current = null
+    }
+
     const startCamera = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false })
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'user',
+            width: { ideal: 1920, max: 2560 },
+            height: { ideal: 1080, max: 1440 },
+            frameRate: { ideal: 30, max: 60 },
+          },
+          audio: false,
+        })
         if (!isMounted) { stream.getTracks().forEach(t => t.stop()); return }
         streamRef.current = stream
+        const [videoTrack] = stream.getVideoTracks()
+        initImageCapture(videoTrack)
         if (videoRef.current) videoRef.current.srcObject = stream
         setPermissionState('granted')
       } catch {
-        setPermissionState('denied')
-        setError('Camera access was blocked. Please allow camera permissions and refresh.')
+        try {
+          const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false })
+          if (!isMounted) { fallbackStream.getTracks().forEach(t => t.stop()); return }
+          streamRef.current = fallbackStream
+          const [videoTrack] = fallbackStream.getVideoTracks()
+          initImageCapture(videoTrack)
+          if (videoRef.current) videoRef.current.srcObject = fallbackStream
+          setPermissionState('granted')
+        } catch {
+          setPermissionState('denied')
+          setError('Camera access was blocked. Please allow camera permissions and refresh.')
+        }
       }
     }
     startCamera()
     return () => {
       isMounted = false
       timersRef.current.forEach(id => clearTimeout(id))
+      imageCaptureRef.current = null
       if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop())
     }
   }, [])
@@ -71,23 +106,76 @@ function Camera({ onComplete }) {
     void audioRef.current.play().catch(() => {})
   }
 
-  const snapFrame = () => {
-    const video = videoRef.current
+  const applyEffectsToCanvas = (source, width, height) => {
     const canvas = canvasRef.current
-    if (!video || !canvas) return null
-    const w = video.videoWidth, h = video.videoHeight
-    if (!w || !h) return null
-    canvas.width = w; canvas.height = h
+    if (!canvas || !source || !width || !height) return null
+    canvas.width = width
+    canvas.height = height
     const ctx = canvas.getContext('2d')
     if (!ctx) return null
     ctx.filter = FILTERS[selectedFilter].css
     if (autoRetouch) ctx.filter = `${ctx.filter} brightness(1.07) saturate(1.08) contrast(1.05)`
     ctx.save()
-    ctx.translate(w, 0)
+    ctx.translate(width, 0)
     ctx.scale(-1, 1)
-    ctx.drawImage(video, 0, 0, w, h)
+    ctx.drawImage(source, 0, 0, width, height)
     ctx.restore()
     return canvas.toDataURL('image/jpeg', 0.94)
+  }
+
+  const snapFrameFromVideo = () => {
+    const video = videoRef.current
+    if (!video) return null
+    const w = video.videoWidth
+    const h = video.videoHeight
+    if (!w || !h) return null
+    return applyEffectsToCanvas(video, w, h)
+  }
+
+  const blobToImage = (blob) => new Promise((resolve, reject) => {
+    const image = new Image()
+    const blobUrl = URL.createObjectURL(blob)
+    image.onload = () => {
+      URL.revokeObjectURL(blobUrl)
+      resolve(image)
+    }
+    image.onerror = () => {
+      URL.revokeObjectURL(blobUrl)
+      reject(new Error('Could not decode captured image blob.'))
+    }
+    image.src = blobUrl
+  })
+
+  const snapFrameWithImageCapture = async () => {
+    const imageCapture = imageCaptureRef.current
+    if (!imageCapture) return null
+
+    try {
+      const photoBlob = await imageCapture.takePhoto()
+      if (!photoBlob) return null
+
+      if (typeof window !== 'undefined' && 'createImageBitmap' in window) {
+        const bitmap = await window.createImageBitmap(photoBlob)
+        const dataUrl = applyEffectsToCanvas(bitmap, bitmap.width, bitmap.height)
+        if (typeof bitmap.close === 'function') {
+          bitmap.close()
+        }
+        return dataUrl
+      }
+
+      const image = await blobToImage(photoBlob)
+      return applyEffectsToCanvas(image, image.naturalWidth || image.width, image.naturalHeight || image.height)
+    } catch {
+      return null
+    }
+  }
+
+  const snapFrame = async () => {
+    const highQualityPhoto = await snapFrameWithImageCapture()
+    if (highQualityPhoto) {
+      return highQualityPhoto
+    }
+    return snapFrameFromVideo()
   }
 
   const runCaptureSequence = (shotIndex, collected) => {
@@ -101,15 +189,16 @@ function Camera({ onComplete }) {
       if (seconds === 0) {
         if (flashEnabled) { setFlashFrame(true); queueTimeout(() => setFlashFrame(false), 160) }
         playShutter()
-        const photo = snapFrame()
-        if (photo) {
-          const next = [...collected, photo]
-          setCapturedPhotos(next)
-          queueTimeout(() => runCaptureSequence(shotIndex + 1, next), 450)
-        } else {
-          setIsCapturing(false)
-          setError('Could not capture a frame from the camera stream.')
-        }
+        void snapFrame().then((photo) => {
+          if (photo) {
+            const next = [...collected, photo]
+            setCapturedPhotos(next)
+            queueTimeout(() => runCaptureSequence(shotIndex + 1, next), 450)
+          } else {
+            setIsCapturing(false)
+            setError('Could not capture a frame from the camera stream.')
+          }
+        })
         return
       }
       queueTimeout(() => runCountdown(seconds - 1), 1000)
@@ -165,7 +254,7 @@ function Camera({ onComplete }) {
         .booth-root {
           font-family: 'DM Sans', sans-serif;
           background: var(--cream);
-          min-height: 100vh;
+          min-height: 100svh;
           display: grid;
           grid-template-columns: 280px 1fr;
           gap: 0;
@@ -480,8 +569,8 @@ function Camera({ onComplete }) {
         .studio {
           display: flex;
           flex-direction: column;
-          padding: 32px 36px;
-          gap: 24px;
+          padding: clamp(16px, 2.3vw, 32px) clamp(14px, 2.6vw, 36px);
+          gap: clamp(12px, 1.8vw, 24px);
           position: relative;
           z-index: 1;
         }
@@ -555,6 +644,16 @@ function Camera({ onComplete }) {
         .corner {
           position: absolute;
           width: 20px; height: 20px;
+
+        @media (max-width: 1200px) {
+          .booth-root {
+            grid-template-columns: minmax(230px, 260px) minmax(0, 1fr);
+          }
+
+          .studio-title {
+            font-size: clamp(22px, 2.8vw, 28px);
+          }
+        }
           border-color: rgba(255,255,255,0.5);
           border-style: solid;
         }
@@ -825,6 +924,21 @@ function Camera({ onComplete }) {
           }
         }
 
+        @media (min-width: 761px) and (max-width: 1024px) {
+          .studio {
+            padding-bottom: 18px;
+          }
+
+          .viewfinder-outer {
+            grid-template-columns: minmax(0, 1fr) 96px;
+            gap: 12px;
+          }
+
+          .film-slot {
+            min-height: 88px;
+          }
+        }
+
         @media (max-width: 760px) {
           .booth-root {
             overflow: visible;
@@ -1071,6 +1185,22 @@ function Camera({ onComplete }) {
           .mobile-start-btn {
             font-size: 12px;
             min-height: 42px;
+          }
+        }
+
+        @media (min-width: 1500px) {
+          .booth-root {
+            grid-template-columns: 300px 1fr;
+          }
+
+          .studio {
+            max-width: 1180px;
+            width: 100%;
+            margin: 0 auto;
+          }
+
+          .viewfinder-card {
+            max-height: 620px;
           }
         }
 

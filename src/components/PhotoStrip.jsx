@@ -142,7 +142,7 @@ const PhotoStrip = forwardRef(function PhotoStrip({ photos }, forwardedRef) {
         .ps-root {
           font-family: 'DM Sans', sans-serif;
           background: var(--cream);
-          min-height: 100vh;
+          min-height: 100svh;
           display: grid;
           grid-template-rows: auto 1fr;
           color: var(--text-dark);
@@ -165,7 +165,8 @@ const PhotoStrip = forwardRef(function PhotoStrip({ photos }, forwardedRef) {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          padding: 20px 36px;
+          gap: 12px;
+          padding: clamp(12px, 2vw, 20px) clamp(12px, 3vw, 36px);
           border-bottom: 1px solid var(--border);
           background: #fff;
         }
@@ -246,6 +247,16 @@ const PhotoStrip = forwardRef(function PhotoStrip({ photos }, forwardedRef) {
           display: grid;
           grid-template-columns: 300px 1fr;
           overflow: hidden;
+        }
+
+        @media (max-width: 1200px) {
+          .ps-body {
+            grid-template-columns: minmax(250px, 280px) minmax(0, 1fr);
+          }
+
+          .ps-canvas {
+            padding: clamp(16px, 2vw, 30px);
+          }
         }
 
         /* ── Controls Sidebar ── */
@@ -633,6 +644,17 @@ const PhotoStrip = forwardRef(function PhotoStrip({ photos }, forwardedRef) {
           }
         }
 
+        @media (min-width: 901px) and (max-width: 1100px) {
+          .strip-wrap,
+          .photo-strip {
+            width: min(38vw, 320px);
+          }
+
+          .sticker-grid {
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+          }
+        }
+
         @media (min-width: 1400px) {
           .ps-body {
             grid-template-columns: 330px 1fr;
@@ -673,7 +695,7 @@ const PhotoStrip = forwardRef(function PhotoStrip({ photos }, forwardedRef) {
 
           .strip-wrap,
           .photo-strip {
-            width: min(86vw, 300px);
+            width: min(86vw, 320px);
           }
 
           .ps-sidebar {
@@ -697,6 +719,23 @@ const PhotoStrip = forwardRef(function PhotoStrip({ photos }, forwardedRef) {
 
           .ps-tip {
             padding: 14px;
+          }
+        }
+
+        @media (max-width: 768px) {
+          .ps-topbar {
+            align-items: stretch;
+          }
+
+          .ps-brand,
+          .ps-step-pill,
+          .ps-save-btn {
+            width: 100%;
+            justify-content: center;
+          }
+
+          .ps-save-btn {
+            min-height: 42px;
           }
         }
 
